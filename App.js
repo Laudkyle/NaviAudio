@@ -1,27 +1,58 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Audio } from 'expo-av';
-import axios from 'axios';
-import { TailwindProvider, tw } from '@tailwindcssinexpo/react-native-tailwind';
+import * as tf from '@tensorflow/tfjs';
+import { bundleResourceIO } from '@tensorflow/tfjs-react-native';
+
+
 
 export default function App() {
   const [recording, setRecording] = useState(null);
   const [message, setMessage] = useState('Hold to record');
+  const [model, setModel] = useState(null);
   const recordingRef = useRef(null);
+
+  useEffect(() => {
+    async function loadModel() {
+      try {
+        // Ensure TensorFlow is ready to use
+        await tf.ready();
+
+        // Load the model and weights using bundleResourceIO
+        const modelJson = await require('./assets/model/model.json');
+        const modelWeights = [
+          require('./assets/model/group1-shard1of1.bin'),
+        ];
+
+        // Load model with bundled resources
+        const model = await tf.loadLayersModel(bundleResourceIO(modelJson, modelWeights));
+        setModel(model);
+        console.log('Model loaded successfully');
+      } catch (error) {
+        console.error('Error loading model:', error);
+      }
+    }
+
+    loadModel();
+  }, []);
 
   const startRecording = async () => {
     try {
-      console.log('Requesting permissions...');
-      await Audio.requestPermissionsAsync();
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        console.error('Permission to access microphone was denied');
+        return;
+      }
+
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
 
-      console.log('Starting recording...');
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
+
       recordingRef.current = recording;
       setRecording(recording);
       setMessage('Recording...');
@@ -31,48 +62,59 @@ export default function App() {
   };
 
   const stopRecording = async () => {
-    console.log('Stopping recording...');
-    recordingRef.current.stopAndUnloadAsync();
-    const uri = recordingRef.current.getURI();
-    setRecording(null);
-    setMessage('Recording stopped, sending audio...');
-
-    // Send the audio file
-    const formData = new FormData();
-    formData.append('file', {
-      uri,
-      name: 'recording.wav',
-      type: 'audio/wav',
-    });
-
     try {
-      const response = await axios.post(
-        'https://navi-audio-server.onrender.com/predict',
-        formData,
-        {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        }
-      );
-      setMessage(`Command: ${response.data.command}, Speaker: ${response.data.speaker}`);
-    } catch (err) {
-      console.error('Failed to send audio', err);
-      setMessage('Failed to send audio');
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      setRecording(null);
+      setMessage('Recording stopped, sending audio...');
+      
+      // Save the recorded file locally
+      const fileUri = `${FileSystem.documentDirectory}recording.wav`;
+      await FileSystem.copyAsync({ from: uri, to: fileUri });
+
+      // Load and preprocess audio
+      const audioData = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64 });
+
+      // Predict using the TensorFlow.js model
+      if (model) {
+        const inputTensor = tf.tensor([new Float32Array(decode(audioData))]); // Adjust preprocessing as necessary
+        const predictions = await model.predict(inputTensor).data();
+        console.log('Predictions:', predictions);
+        setMessage('Prediction successful');
+      } else {
+        setMessage('Model not loaded yet');
+      }
+    } catch (error) {
+      console.error('Error during recording:', error);
+      setMessage('Error during recording');
     }
   };
 
-  return (
-    <TailwindProvider>
-      <View style={tw`flex-1 justify-center items-center bg-gray-100`}>
-        <TouchableOpacity
-          style={tw`w-64 h-64 bg-blue-500 rounded-full justify-center items-center`}
-          onPressIn={startRecording}
-          onPressOut={stopRecording}
-        >
-          <Text style={tw`text-white text-xl`}>{message}</Text>
-        </TouchableOpacity>
+  if (!model) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f0f0f0' }}>
+        <ActivityIndicator size="large" color="#007bff" />
+        <Text style={{ marginTop: 20 }}>Loading model...</Text>
       </View>
-    </TailwindProvider>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f0f0f0' }}>
+      <TouchableOpacity
+        style={{
+          width: 150,
+          height: 150,
+          backgroundColor: '#007bff',
+          borderRadius: 75,
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+        onPressIn={startRecording}
+        onPressOut={stopRecording}
+      >
+        <Text style={{ color: '#fff', fontSize: 18 }}>{message}</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
