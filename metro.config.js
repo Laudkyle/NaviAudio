@@ -1,16 +1,8 @@
-const { getDefaultConfig } = require("metro-config");
+const { getDefaultConfig } = require('expo/metro-config');
 
-module.exports = async () => {
-  const defaultConfig = await getDefaultConfig();
-  const { assetExts } = defaultConfig.resolver;
+const config = getDefaultConfig(__dirname);
 
-  return {
-    resolver: {
-      assetExts: [
-        ...assetExts,
-        "json", // JSON files
-        "bin", // Binary files
-      ],
-    },
-  };
-};
+// Add support for .bin files
+config.resolver.sourceExts.push('bin');
+
+module.exports = config;
